@@ -1,7 +1,8 @@
 require 'oauth/consumer'
 require 'oauth/signature/PLAINTEXT'
+
 module OAuth #:nodoc:
-  VERSION = '0.3.7.pre1'
+  VERSION = '0.4.1'
 end
 
 require "net/http"
@@ -19,9 +20,15 @@ require "net/http"
                               }
                               
                               )
-puts @consumer.options
-puts OAuth::Signature.available_methods
 @request_token = @consumer.get_request_token          
 
-puts @request_token.authorize_url
+puts @request_token.authorize_url(:oauth_callback => "http://sis-w.net:4567")
+oauth_token = gets.chomp.strip
+@access_token = @request_token.get_access_token(
+                                                :oauth_verifier => oauth_token,
+                                                :oauth_token => @request_token.token,
+                                                )
 
+
+puts "Access token: #{@access_token.token}"
+puts @access_token.secret
