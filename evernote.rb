@@ -1,5 +1,6 @@
+# -*- coding: utf-8 -*-
 
-
+require 'nokogiri'
 require 'oauth/consumer'
 require 'oauth/signature/PLAINTEXT'
 require "thrift"
@@ -35,7 +36,7 @@ oauth_token = gets.chomp.strip
 puts "Access token: #{@access_token.token}\n#{p @access_token.token}"
 =end
 
-
+note2blog = Nokogiri::XSLT(File.read('note2blog.xslt'))
 noteStoreUrl = "http://sandbox.evernote.com/edam/note/s1"
 noteStoreTransport = Thrift::HTTPClientTransport.new(noteStoreUrl)
 noteStoreProtocol = Thrift::BinaryProtocol.new(noteStoreTransport)
@@ -55,7 +56,6 @@ res.notes.each do |note|
   if note.resources
     note.resources.each do |resource|
       data = noteStore.getResource(@access_token, resource.guid, true, true, true, true)
-      puts hex = data.data.bodyHash.unpack('H*').first
       ext = case data.mime
             when 'image/png'
               'png'
@@ -68,5 +68,49 @@ res.notes.each do |note|
     end
   end
   content = noteStore.getNoteContent(@access_token, note.guid)
-  puts content
+  content = note2blog.transform(Nokogiri::XML(content)).to_s
+  title = note.title
+  tags = noteStore.getNoteTagNames(@access_token, note.guid)
+  tags.delete_if { |a| a == filter_tag}
 end
+
+######
+# Hatena AtomPub
+######
+
+
+require 'rubygems'
+require 'atomutil'
+
+module Atompub
+  class HatenaClient < Client
+    def publish_entry(uri)
+      @hatena_publish = true
+      update_resource(uri, ' ', Atom::MediaType::ENTRY.to_s)
+    ensure
+      @hatena_publish = false
+    end
+
+    private
+    def set_common_info(req)
+      req['X-Hatena-Publish'] = 1 if @hatena_publish
+      super(req)
+    end
+  end
+end
+
+auth = Atompub::Auth::Wsse.new :username => 'UserID', :password => 'password'
+client = Atompub::HatenaClient.new :auth => auth
+service = client.get_service 'http://d.hatena.ne.jp/%s/atom' % 'UserID'
+collection_uri = service.workspace.collections[1].href
+
+entry = Atom::Entry.new(
+  :title => 'My Entry Title',
+  :updated => Time.now
+)
+
+entry.content = <<EOF
+エントリー本文だよ
+EOF
+
+puts client.create_entry collection_uri, entry
