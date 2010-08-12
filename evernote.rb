@@ -12,7 +12,7 @@ require "net/http"
 require "pit"
 require 'atomutil'
 require './hatenadf'
-
+require './db'
 
 EVERNOTE_SERVER = "http://sandbox.evernote.com"
 
@@ -33,10 +33,17 @@ class EverNote
                                     :access_token_path  => "/oauth",
                                     :authorize_path     => "/OAuth.action"
                                   })
-    @request_token = @consumer.get_request_token          
-    puts @request_token.authorize_url(:oauth_callback => "http://sis-w.net:4567")
-    oauth_token = gets.chomp.strip
-    @access_token = @request_token.get_access_token.token
+    token = Token.new
+    if token.access_token?
+      @request_token = @consumer.get_request_token          
+      puts @request_token.authorize_url(:oauth_callback => "http://sis-w.net:4567")
+      oauth_token = gets.chomp.strip
+      @access_token = @request_token.get_access_token.token  
+      token.update_token(@access_token)
+    else
+      @access_token = token.get_token
+    end
+    
     noteStoreUrl = EVERNOTE_SERVER + "/edam/note/s1"
     noteStoreTransport = Thrift::HTTPClientTransport.new(noteStoreUrl)
     noteStoreProtocol = Thrift::BinaryProtocol.new(noteStoreTransport)
@@ -80,21 +87,24 @@ end
 
 evernote = EverNote.new
 hatena = HatenaDF.new
+db = Entries.new
 keyword = "Blog"
 notes = evernote.find_notes(keyword)
 content = Hash.new
 notes.notes.each do |note|
+  next if db.exist?(note.guid)
   content[:content] =evernote.get_note(note.guid)
   if note.resources
     imgtag = evernote.save_resources(note.resources).collect {|file| hatena.upload_fotolife(file)}
     imgtag.each{|tag| content[:content].gsub!(/<en-media.*?>/,tag)}
   end
   content[:content].gsub!(/<br.*?>/,"\n")
-  content[:content].gsub!(/<.*?>/, "")
+  content[:content].gsub!(/<.*?>/, "").strip!
   content[:title] = note.title
   tags =evernote.get_tags(note.guid)
   tags.each do |tag|
     content[:title] = "[#{tag}]" + content[:title]
   end
-  hatena.write_diary(content)
+  url = hatena.write_diary(content)
+  db.add({:url => url,:guid => note.guid})
 end

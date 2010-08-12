@@ -2,5 +2,5 @@ require 'rubygems'
 require 'sinatra'
 
 get "/" do
-   params[:oauth_token]
+  "Input " + params[:oauth_token] + "to console"
 end
