@@ -8,109 +8,93 @@ require "Evernote/EDAM/user_store"
 require "Evernote/EDAM/user_store_constants.rb"
 require "Evernote/EDAM/note_store"
 require "Evernote/EDAM/limits_constants.rb"
+require "net/http"
+require "pit"
+require 'atomutil'
+require './hatenadf'
+
+
+EVERNOTE_SERVER = "http://sandbox.evernote.com"
 
 module OAuth #:nodoc:
   VERSION = '0.4.1'
 end
 
-require "net/http"
-=begin
-@consumer=OAuth::Consumer.new(
-                              "watura", 
-                              "dcfd22cf4793597f", 
-                              {
-                                :site               => "http://sandbox.evernote.com",
-                                :http_method        => :get,
-                                :signature_method => "plaintext", 
-                                :request_token_path => "/oauth",
-                                :access_token_path  => "/oauth",
-                                :authorize_path     => "/OAuth.action"
-                              }
-                              
-                              )
-@request_token = @consumer.get_request_token          
+class EverNote
+  def initialize
+    @key = Pit.get("evernote.api")["key"] 
+    @pass = Pit.get("evernote.api")["secret"]
+    @consumer=OAuth::Consumer.new(@key,
+                                  @pass,
+                                  {:site               => EVERNOTE_SERVER,
+                                    :http_method        => :get,
+                                    :signature_method => "plaintext", 
+                                    :request_token_path => "/oauth",
+                                    :access_token_path  => "/oauth",
+                                    :authorize_path     => "/OAuth.action"
+                                  })
+    @request_token = @consumer.get_request_token          
+    puts @request_token.authorize_url(:oauth_callback => "http://sis-w.net:4567")
+    oauth_token = gets.chomp.strip
+    @access_token = @request_token.get_access_token.token
+    noteStoreUrl = EVERNOTE_SERVER + "/edam/note/s1"
+    noteStoreTransport = Thrift::HTTPClientTransport.new(noteStoreUrl)
+    noteStoreProtocol = Thrift::BinaryProtocol.new(noteStoreTransport)
+    @noteStore = Evernote::EDAM::NoteStore::NoteStore::Client.new(noteStoreProtocol)
+  end
+  
+  def get_note(guid)
+    return @noteStore.getNoteContent(@access_token, guid)
+  end
 
-puts @request_token.authorize_url(:oauth_callback => "http://sis-w.net:4567")
-oauth_token = gets.chomp.strip
-@access_token = @request_token.get_access_token
-puts "Access token: #{@access_token.token}\n#{p @access_token.token}"
-=end
+  def get_tags(guid)
+    return  @noteStore.getNoteTagNames(@access_token, guid)
+  end
 
-note2blog = Nokogiri::XSLT(File.read('note2blog.xslt'))
-noteStoreUrl = "http://sandbox.evernote.com/edam/note/s1"
-noteStoreTransport = Thrift::HTTPClientTransport.new(noteStoreUrl)
-noteStoreProtocol = Thrift::BinaryProtocol.new(noteStoreTransport)
-noteStore = Evernote::EDAM::NoteStore::NoteStore::Client.new(noteStoreProtocol)
-
-@access_token = "S=s1:U=388a:E=12a60aa5801:C=12a5b83fc01:P=7:A=watura:H=dc3b3a40e991faa7ebe315daabcfd551"
-#puts noteStore.listNotebooks(@access_token)
-
-
-
-filter_tag = "Blog"
-filter = Evernote::EDAM::NoteStore::NoteFilter.new
-filter.words = "tag:#{ filter_tag}"
-res = noteStore.findNotes(@access_token, filter, 0, 100)
-
-res.notes.each do |note|
-  if note.resources
-    note.resources.each do |resource|
-      data = noteStore.getResource(@access_token, resource.guid, true, true, true, true)
+def find_notes(tag)
+    filter_tag = tag.to_s
+    filter = Evernote::EDAM::NoteStore::NoteFilter.new
+    filter.words = "tag:#{ filter_tag}"
+    return res = @noteStore.findNotes(@access_token, filter, 0, 100)
+  end    
+  
+  def save_resources(resources)    
+    files =[]
+    resources.each do |resource|
+      data = @noteStore.getResource(@access_token, resource.guid, true, true, true, true)
+      hex = data.data.bodyHash.unpack('H*').first
       ext = case data.mime
             when 'image/png'
               'png'
             when 'image/jpeg'
               'jpg'
             else
-              raise "Unknown mime type: #{data.mime}"
+              next
             end
       File.open("/Users/watura/Downloads/instev/#{hex}.#{ext}", 'w') { |f| f.write(data.data.body)}
+      files << "#{hex}.#{ext}"
     end
-  end
-  content = noteStore.getNoteContent(@access_token, note.guid)
-  content = note2blog.transform(Nokogiri::XML(content)).to_s
-  title = note.title
-  tags = noteStore.getNoteTagNames(@access_token, note.guid)
-  tags.delete_if { |a| a == filter_tag}
-end
-
-######
-# Hatena AtomPub
-######
-
-
-require 'rubygems'
-require 'atomutil'
-
-module Atompub
-  class HatenaClient < Client
-    def publish_entry(uri)
-      @hatena_publish = true
-      update_resource(uri, ' ', Atom::MediaType::ENTRY.to_s)
-    ensure
-      @hatena_publish = false
-    end
-
-    private
-    def set_common_info(req)
-      req['X-Hatena-Publish'] = 1 if @hatena_publish
-      super(req)
-    end
+    return files
   end
 end
 
-auth = Atompub::Auth::Wsse.new :username => 'UserID', :password => 'password'
-client = Atompub::HatenaClient.new :auth => auth
-service = client.get_service 'http://d.hatena.ne.jp/%s/atom' % 'UserID'
-collection_uri = service.workspace.collections[1].href
-
-entry = Atom::Entry.new(
-  :title => 'My Entry Title',
-  :updated => Time.now
-)
-
-entry.content = <<EOF
-エントリー本文だよ
-EOF
-
-puts client.create_entry collection_uri, entry
+evernote = EverNote.new
+hatena = HatenaDF.new
+keyword = "Blog"
+notes = evernote.find_notes(keyword)
+content = Hash.new
+notes.notes.each do |note|
+  content[:content] =evernote.get_note(note.guid)
+  if note.resources
+    imgtag = evernote.save_resources(note.resources).collect {|file| hatena.upload_fotolife(file)}
+    imgtag.each{|tag| content[:content].gsub!(/<en-media.*?>/,tag)}
+  end
+  content[:content].gsub!(/<br.*?>/,"\n")
+  content[:content].gsub!(/<.*?>/, "")
+  content[:title] = note.title
+  tags =evernote.get_tags(note.guid)
+  tags.each do |tag|
+    content[:title] = "[#{tag}]" + content[:title]
+  end
+  hatena.write_diary(content)
+end
