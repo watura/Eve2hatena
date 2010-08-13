@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# You need to get your Evernote API Keys
+#
 
 require 'nokogiri'
 require 'oauth/consumer'
